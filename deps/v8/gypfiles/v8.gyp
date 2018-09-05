@@ -1596,6 +1596,7 @@
         '../src/wasm/module-compiler.h',
         '../src/wasm/module-decoder.cc',
         '../src/wasm/module-decoder.h',
+        '../src/wasm/object-access.h',
         '../src/wasm/signature-map.cc',
         '../src/wasm/signature-map.h',
         '../src/wasm/streaming-decoder.cc',
