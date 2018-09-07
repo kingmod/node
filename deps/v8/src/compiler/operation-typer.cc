@@ -16,20 +16,29 @@ namespace v8 {
 namespace internal {
 namespace compiler {
 
-OperationTyper::OperationTyper(Isolate* isolate, Zone* zone)
+OperationTyper::OperationTyper(Isolate* isolate, JSHeapBroker* js_heap_broker,
+                               Zone* zone)
     : zone_(zone), cache_(TypeCache::Get()) {
   Factory* factory = isolate->factory();
-  infinity_ = Type::NewConstant(factory->infinity_value(), zone);
-  minus_infinity_ = Type::NewConstant(factory->minus_infinity_value(), zone);
+  infinity_ =
+      Type::NewConstant(js_heap_broker, factory->infinity_value(), zone);
+  minus_infinity_ =
+      Type::NewConstant(js_heap_broker, factory->minus_infinity_value(), zone);
   Type truncating_to_zero = Type::MinusZeroOrNaN();
   DCHECK(!truncating_to_zero.Maybe(Type::Integral32()));
 
-  singleton_empty_string_ = Type::HeapConstant(factory->empty_string(), zone);
-  singleton_NaN_string_ = Type::HeapConstant(factory->NaN_string(), zone);
-  singleton_zero_string_ = Type::HeapConstant(factory->zero_string(), zone);
-  singleton_false_ = Type::HeapConstant(factory->false_value(), zone);
-  singleton_true_ = Type::HeapConstant(factory->true_value(), zone);
-  singleton_the_hole_ = Type::HeapConstant(factory->the_hole_value(), zone);
+  singleton_empty_string_ =
+      Type::HeapConstant(js_heap_broker, factory->empty_string(), zone);
+  singleton_NaN_string_ =
+      Type::HeapConstant(js_heap_broker, factory->NaN_string(), zone);
+  singleton_zero_string_ =
+      Type::HeapConstant(js_heap_broker, factory->zero_string(), zone);
+  singleton_false_ =
+      Type::HeapConstant(js_heap_broker, factory->false_value(), zone);
+  singleton_true_ =
+      Type::HeapConstant(js_heap_broker, factory->true_value(), zone);
+  singleton_the_hole_ =
+      Type::HeapConstant(js_heap_broker, factory->the_hole_value(), zone);
   signed32ish_ = Type::Union(Type::Signed32(), truncating_to_zero, zone);
   unsigned32ish_ = Type::Union(Type::Unsigned32(), truncating_to_zero, zone);
 
@@ -256,43 +265,61 @@ Type OperationTyper::ConvertReceiver(Type type) {
   return type;
 }
 
-Type OperationTyper::ToNumberOrNumeric(Object::Conversion mode, Type type) {
+Type OperationTyper::ToNumber(Type type) {
   if (type.Is(Type::Number())) return type;
-  if (type.Is(Type::NullOrUndefined())) {
-    if (type.Is(Type::Null())) return cache_.kSingletonZero;
-    if (type.Is(Type::Undefined())) return Type::NaN();
-    return Type::Union(Type::NaN(), cache_.kSingletonZero, zone());
+
+  // If {type} includes any receivers, we cannot tell what kind of
+  // Number their callbacks might produce. Similarly in the case
+  // where {type} includes String, it's not possible at this point
+  // to tell which exact numbers are going to be produced.
+  if (type.Maybe(Type::StringOrReceiver())) return Type::Number();
+
+  // Both Symbol and BigInt primitives will cause exceptions
+  // to be thrown from ToNumber conversions, so they don't
+  // contribute to the resulting type anyways.
+  type = Type::Intersect(type, Type::PlainPrimitive(), zone());
+
+  // This leaves us with Number\/Oddball, so deal with the individual
+  // Oddball primitives below.
+  DCHECK(type.Is(Type::NumberOrOddball()));
+  if (type.Maybe(Type::Null())) {
+    // ToNumber(null) => +0
+    type = Type::Union(type, cache_.kSingletonZero, zone());
   }
-  if (type.Is(Type::Boolean())) {
-    if (type.Is(singleton_false_)) return cache_.kSingletonZero;
-    if (type.Is(singleton_true_)) return cache_.kSingletonOne;
-    return cache_.kZeroOrOne;
+  if (type.Maybe(Type::Undefined())) {
+    // ToNumber(undefined) => NaN
+    type = Type::Union(type, Type::NaN(), zone());
   }
-  if (type.Is(Type::NumberOrOddball())) {
-    if (type.Is(Type::NumberOrUndefined())) {
-      type = Type::Union(type, Type::NaN(), zone());
-    } else if (type.Is(Type::NullOrNumber())) {
-      type = Type::Union(type, cache_.kSingletonZero, zone());
-    } else if (type.Is(Type::BooleanOrNullOrNumber())) {
-      type = Type::Union(type, cache_.kZeroOrOne, zone());
-    } else {
-      type = Type::Union(type, cache_.kZeroOrOneOrNaN, zone());
-    }
-    return Type::Intersect(type, Type::Number(), zone());
+  if (type.Maybe(singleton_false_)) {
+    // ToNumber(false) => +0
+    type = Type::Union(type, cache_.kSingletonZero, zone());
   }
-  if (type.Is(Type::BigInt())) {
-    return mode == Object::Conversion::kToNumber ? Type::None() : type;
+  if (type.Maybe(singleton_true_)) {
+    // ToNumber(true) => +1
+    type = Type::Union(type, cache_.kSingletonOne, zone());
   }
-  return mode == Object::Conversion::kToNumber ? Type::Number()
-                                               : Type::Numeric();
+  return Type::Intersect(type, Type::Number(), zone());
 }
 
-Type OperationTyper::ToNumber(Type type) {
-  return ToNumberOrNumeric(Object::Conversion::kToNumber, type);
+Type OperationTyper::ToNumberConvertBigInt(Type type) {
+  // If the {type} includes any receivers, then the callbacks
+  // might actually produce BigInt primitive values here.
+  bool maybe_bigint =
+      type.Maybe(Type::BigInt()) || type.Maybe(Type::Receiver());
+  type = ToNumber(Type::Intersect(type, Type::NonBigInt(), zone()));
+
+  // Any BigInt is rounded to an integer Number in the range [-inf, inf].
+  return maybe_bigint ? Type::Union(type, cache_.kInteger, zone()) : type;
 }
 
 Type OperationTyper::ToNumeric(Type type) {
-  return ToNumberOrNumeric(Object::Conversion::kToNumeric, type);
+  // If the {type} includes any receivers, then the callbacks
+  // might actually produce BigInt primitive values here.
+  if (type.Maybe(Type::Receiver())) {
+    type = Type::Union(type, Type::BigInt(), zone());
+  }
+  return Type::Union(ToNumber(Type::Intersect(type, Type::NonBigInt(), zone())),
+                     Type::Intersect(type, Type::BigInt(), zone()), zone());
 }
 
 Type OperationTyper::NumberAbs(Type type) {
@@ -390,7 +417,7 @@ Type OperationTyper::NumberExp(Type type) {
 
 Type OperationTyper::NumberExpm1(Type type) {
   DCHECK(type.Is(Type::Number()));
-  return Type::Union(Type::PlainNumber(), Type::NaN(), zone());
+  return Type::Number();
 }
 
 Type OperationTyper::NumberFloor(Type type) {
@@ -974,7 +1001,6 @@ Type OperationTyper::NumberMax(Type lhs, Type rhs) {
   if (lhs.Is(Type::NaN()) || rhs.Is(Type::NaN())) return Type::NaN();
 
   Type type = Type::None();
-  // TODO(turbofan): Improve minus zero handling here.
   if (lhs.Maybe(Type::NaN()) || rhs.Maybe(Type::NaN())) {
     type = Type::Union(type, Type::NaN(), zone());
   }
@@ -982,10 +1008,17 @@ Type OperationTyper::NumberMax(Type lhs, Type rhs) {
   DCHECK(!lhs.IsNone());
   rhs = Type::Intersect(rhs, Type::OrderedNumber(), zone());
   DCHECK(!rhs.IsNone());
-  if (lhs.Is(cache_.kInteger) && rhs.Is(cache_.kInteger)) {
+  if (lhs.Is(cache_.kIntegerOrMinusZero) &&
+      rhs.Is(cache_.kIntegerOrMinusZero)) {
+    // TODO(turbofan): This could still be improved in ruling out -0 when
+    // one of the inputs' min is 0.
     double max = std::max(lhs.Max(), rhs.Max());
     double min = std::max(lhs.Min(), rhs.Min());
     type = Type::Union(type, Type::Range(min, max, zone()), zone());
+    if (min <= 0.0 && 0.0 <= max &&
+        (lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero()))) {
+      type = Type::Union(type, Type::MinusZero(), zone());
+    }
   } else {
     type = Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
   }
@@ -1000,7 +1033,6 @@ Type OperationTyper::NumberMin(Type lhs, Type rhs) {
   if (lhs.Is(Type::NaN()) || rhs.Is(Type::NaN())) return Type::NaN();
 
   Type type = Type::None();
-  // TODO(turbofan): Improve minus zero handling here.
   if (lhs.Maybe(Type::NaN()) || rhs.Maybe(Type::NaN())) {
     type = Type::Union(type, Type::NaN(), zone());
   }
@@ -1008,10 +1040,15 @@ Type OperationTyper::NumberMin(Type lhs, Type rhs) {
   DCHECK(!lhs.IsNone());
   rhs = Type::Intersect(rhs, Type::OrderedNumber(), zone());
   DCHECK(!rhs.IsNone());
-  if (lhs.Is(cache_.kInteger) && rhs.Is(cache_.kInteger)) {
+  if (lhs.Is(cache_.kIntegerOrMinusZero) &&
+      rhs.Is(cache_.kIntegerOrMinusZero)) {
     double max = std::min(lhs.Max(), rhs.Max());
     double min = std::min(lhs.Min(), rhs.Min());
     type = Type::Union(type, Type::Range(min, max, zone()), zone());
+    if (min <= 0.0 && 0.0 <= max &&
+        (lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero()))) {
+      type = Type::Union(type, Type::MinusZero(), zone());
+    }
   } else {
     type = Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
   }
@@ -1136,6 +1173,19 @@ Type OperationTyper::StrictEqual(Type lhs, Type rhs) {
     return singleton_true();
   }
   return Type::Boolean();
+}
+
+Type OperationTyper::CheckBounds(Type index, Type length) {
+  DCHECK(length.Is(Type::Unsigned31()));
+  if (index.Maybe(Type::MinusZero())) {
+    index = Type::Union(index, cache_.kSingletonZero, zone());
+  }
+  index = Type::Intersect(index, Type::Integral32(), zone());
+  if (index.IsNone() || length.IsNone()) return Type::None();
+  double min = std::max(index.Min(), 0.0);
+  double max = std::min(index.Max(), length.Max() - 1);
+  if (max < min) return Type::None();
+  return Type::Range(min, max, zone());
 }
 
 Type OperationTyper::CheckFloat64Hole(Type type) {

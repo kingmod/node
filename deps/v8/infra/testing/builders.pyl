@@ -31,6 +31,21 @@
   ##############################################################################
   ### luci.v8.try
   ##############################################################################
+  # Android
+  'v8_android_arm64_n5x_rel_ng_triggered': {
+    'swarming_dimensions' : {
+      'device_os': 'MMB29Q',
+      'device_type': 'bullhead',
+      'os': 'Android',
+    },
+    'tests': [
+      {'name': 'benchmarks'},
+      {'name': 'd8testing', 'variant': 'default', 'shards': 2},
+      {'name': 'mozilla'},
+      {'name': 'test262', 'shards': 6},
+    ],
+  },
+  ##############################################################################
   # Linux32
   'v8_linux_dbg_ng_triggered': {
     'swarming_dimensions' : {
@@ -109,7 +124,63 @@
       {'name': 'test262_variants', 'shards': 4},
       {'name': 'test262_variants', 'variant': 'extra', 'shards': 2},
       {'name': 'v8testing'},
+      {'name': 'v8testing', 'suffix': 'isolates', 'test_args': ['--isolates'], 'shards': 2},
       {'name': 'v8testing', 'variant': 'extra'},
+    ],
+  },
+  'v8_linux_optional_rel_ng_triggered': {
+    'swarming_dimensions' : {
+      'cpu': 'x86-64-avx2',
+    },
+    'tests': [
+      # Code serializer.
+      {'name': 'benchmarks', 'variant': 'code_serializer', 'shards': 1},
+      {'name': 'd8testing', 'variant': 'code_serializer', 'shards': 1},
+      {'name': 'mozilla', 'variant': 'code_serializer', 'shards': 1},
+      {'name': 'test262_variants', 'variant': 'code_serializer', 'shards': 1},
+      # No SSE3.
+      {
+        'name': 'mozilla',
+        'suffix': 'nosse3',
+        'test_args': [
+          '--extra-flags',
+          '--noenable-sse3 --noenable-ssse3 --noenable-sse4-1 --noenable-avx',
+        ],
+      },
+      {
+        'name': 'test262',
+        'suffix': 'nosse3',
+        'test_args': [
+          '--extra-flags',
+          '--noenable-sse3 --noenable-ssse3 --noenable-sse4-1 --noenable-avx',
+        ],
+      },
+      {
+        'name': 'v8testing',
+        'suffix': 'nosse3',
+        'test_args': [
+          '--extra-flags',
+          '--noenable-sse3 --noenable-ssse3 --noenable-sse4-1 --noenable-avx',
+        ],
+        'shards': 3,
+      },
+      # No SSE4.
+      {
+        'name': 'mozilla',
+        'suffix': 'nosse4',
+        'test_args': ['--extra-flags', '--noenable-sse4-1 --noenable-avx'],
+      },
+      {
+        'name': 'test262',
+        'suffix': 'nosse4',
+        'test_args': ['--extra-flags', '--noenable-sse4-1 --noenable-avx'],
+      },
+      {
+        'name': 'v8testing',
+        'suffix': 'nosse4',
+        'test_args': ['--extra-flags', '--noenable-sse4-1 --noenable-avx'],
+        'shards': 3,
+      },
     ],
   },
   'v8_linux_verify_csa_rel_ng_triggered': {
@@ -217,6 +288,11 @@
       {'name': 'v8testing', 'variant': 'slow_path'},
     ],
   },
+  'v8_linux64_tsan_isolates_rel_ng_triggered': {
+    'tests': [
+      {'name': 'v8testing', 'test_args': ['--isolates'], 'shards': 7},
+    ],
+  },
   'v8_linux64_ubsan_rel_ng_triggered': {
     'tests': [
       {'name': 'v8testing', 'shards': 2},
@@ -248,8 +324,8 @@
       {'name': 'mjsunit_sp_frame_access'},
       {'name': 'mozilla'},
       {'name': 'test262'},
-      {'name': 'v8testing', 'shards': 7},
-      {'name': 'v8testing', 'variant': 'extra', 'shards': 3},
+      {'name': 'v8testing', 'shards': 9},
+      {'name': 'v8testing', 'variant': 'extra', 'shards': 4},
     ],
   },
   ##############################################################################

@@ -15,8 +15,10 @@ namespace internal {
 #define __ masm.
 
 UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
+  v8::PageAllocator* page_allocator = GetPlatformPageAllocator();
   size_t allocated = 0;
-  byte* buffer = AllocatePage(isolate->heap()->GetRandomMmapAddr(), &allocated);
+  byte* buffer = AllocatePage(page_allocator,
+                              isolate->heap()->GetRandomMmapAddr(), &allocated);
   if (buffer == nullptr) return nullptr;
 
   MacroAssembler masm(isolate, buffer, static_cast<int>(allocated),
@@ -29,10 +31,11 @@ UnaryMathFunctionWithIsolate CreateSqrtFunction(Isolate* isolate) {
 
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
-  DCHECK(!RelocInfo::RequiresRelocation(desc));
+  DCHECK(!RelocInfo::RequiresRelocationAfterCodegen(desc));
 
   Assembler::FlushICache(buffer, allocated);
-  CHECK(SetPermissions(buffer, allocated, PageAllocator::kReadExecute));
+  CHECK(SetPermissions(page_allocator, buffer, allocated,
+                       PageAllocator::kReadExecute));
   return FUNCTION_CAST<UnaryMathFunctionWithIsolate>(buffer);
 }
 

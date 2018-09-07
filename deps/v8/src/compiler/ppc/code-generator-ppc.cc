@@ -13,6 +13,7 @@
 #include "src/double.h"
 #include "src/optimized-compilation-info.h"
 #include "src/ppc/macro-assembler-ppc.h"
+#include "src/wasm/wasm-objects.h"
 
 namespace v8 {
 namespace internal {
@@ -512,11 +513,11 @@ void EmitWordLoadPoisoningIfNeeded(CodeGenerator* codegen, Instruction* instr,
     /* Min: The algorithm is: -((-L) + (-R)), which in case of L and R */ \
     /* being different registers is most efficiently expressed */         \
     /* as -((-L) - R). */                                                 \
-    __ fneg(left_reg, left_reg);                                          \
-    if (left_reg == right_reg) {                                          \
-      __ fadd(result_reg, left_reg, right_reg);                           \
+    __ fneg(kScratchDoubleReg, left_reg);                                 \
+    if (kScratchDoubleReg == right_reg) {                                 \
+      __ fadd(result_reg, kScratchDoubleReg, right_reg);                  \
     } else {                                                              \
-      __ fsub(result_reg, left_reg, right_reg);                           \
+      __ fsub(result_reg, kScratchDoubleReg, right_reg);                  \
     }                                                                     \
     __ fneg(result_reg, result_reg);                                      \
     __ b(&done);                                                          \
@@ -881,11 +882,9 @@ void CodeGenerator::BailoutIfDeoptimized() {
 void CodeGenerator::GenerateSpeculationPoisonFromCodeStartRegister() {
   Register scratch = kScratchReg;
 
-  Label current_pc;
-  __ mov_label_addr(scratch, &current_pc);
-
-  __ bind(&current_pc);
-  __ subi(scratch, scratch, Operand(__ pc_offset()));
+  __ mflr(r0);
+  __ LoadPC(scratch);
+  __ subi(scratch, scratch, Operand(__ pc_offset() - kInstrSize));
 
   // Calculate a mask which has all bits set in the normal case, but has all
   // bits cleared if we are speculatively executing the wrong PC.
@@ -894,6 +893,7 @@ void CodeGenerator::GenerateSpeculationPoisonFromCodeStartRegister() {
   __ notx(kSpeculationPoisonRegister, scratch);
   __ isel(eq, kSpeculationPoisonRegister,
           kSpeculationPoisonRegister, scratch);
+  __ mtlr(r0);
 }
 
 void CodeGenerator::AssembleRegisterArgumentPoisoning() {
@@ -913,9 +913,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       v8::internal::Assembler::BlockTrampolinePoolScope block_trampoline_pool(
           tasm());
       if (HasRegisterInput(instr, 0)) {
-        __ addi(ip, i.InputRegister(0),
-                Operand(Code::kHeaderSize - kHeapObjectTag));
-        __ Call(ip);
+        Register reg = i.InputRegister(0);
+        DCHECK_IMPLIES(
+            HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
+            reg == kJavaScriptCallCodeStartRegister);
+        __ addi(reg, reg, Operand(Code::kHeaderSize - kHeapObjectTag));
+        __ Call(reg);
       } else {
         __ Call(i.InputCode(0), RelocInfo::CODE_TARGET);
       }
@@ -927,20 +930,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchCallWasmFunction: {
       // We must not share code targets for calls to builtins for wasm code, as
       // they might need to be patched individually.
-      RelocInfo::Mode rmode = RelocInfo::JS_TO_WASM_CALL;
-      if (info()->IsWasm()) {
-        rmode = RelocInfo::WASM_CALL;
-      }
-
       if (instr->InputAt(0)->IsImmediate()) {
+        Constant constant = i.ToConstant(instr->InputAt(0));
 #ifdef V8_TARGET_ARCH_PPC64
-        Address wasm_code =
-            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt64());
+        Address wasm_code = static_cast<Address>(constant.ToInt64());
 #else
-        Address wasm_code =
-            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt32());
+        Address wasm_code = static_cast<Address>(constant.ToInt32());
 #endif
-        __ Call(wasm_code, rmode);
+        __ Call(wasm_code, constant.rmode());
       } else {
         __ Call(i.InputRegister(0));
       }
@@ -957,9 +954,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
                                          i.TempRegister(2));
       }
       if (HasRegisterInput(instr, 0)) {
-        __ addi(ip, i.InputRegister(0),
-                Operand(Code::kHeaderSize - kHeapObjectTag));
-        __ Jump(ip);
+        Register reg = i.InputRegister(0);
+        DCHECK_IMPLIES(
+            HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
+            reg == kJavaScriptCallCodeStartRegister);
+        __ addi(reg, reg, Operand(Code::kHeaderSize - kHeapObjectTag));
+        __ Jump(reg);
       } else {
         // We cannot use the constant pool to load the target since
         // we've already restored the caller's frame.
@@ -974,15 +974,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchTailCallWasm: {
       // We must not share code targets for calls to builtins for wasm code, as
       // they might need to be patched individually.
-      RelocInfo::Mode rmode = RelocInfo::JS_TO_WASM_CALL;
-      if (info()->IsWasm()) {
-        rmode = RelocInfo::WASM_CALL;
-      }
-
       if (instr->InputAt(0)->IsImmediate()) {
-        Address wasm_code =
-            static_cast<Address>(i.ToConstant(instr->InputAt(0)).ToInt32());
-        __ Jump(wasm_code, rmode);
+        Constant constant = i.ToConstant(instr->InputAt(0));
+#ifdef V8_TARGET_ARCH_S390X
+        Address wasm_code = static_cast<Address>(constant.ToInt64());
+#else
+        Address wasm_code = static_cast<Address>(constant.ToInt32());
+#endif
+        __ Jump(wasm_code, constant.rmode());
       } else {
         __ Jump(i.InputRegister(0));
       }
@@ -993,7 +992,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kArchTailCallAddress: {
       CHECK(!instr->InputAt(0)->IsImmediate());
-      __ Jump(i.InputRegister(0));
+      Register reg = i.InputRegister(0);
+      DCHECK_IMPLIES(
+          HasCallDescriptorFlag(instr, CallDescriptor::kFixedTargetRegister),
+          reg == kJavaScriptCallCodeStartRegister);
+      __ Jump(reg);
       frame_access_state()->ClearSPDelta();
       frame_access_state()->SetFrameAccessToDefault();
       break;
@@ -1092,6 +1095,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       AssembleArchJump(i.InputRpo(0));
       DCHECK_EQ(LeaveRC, i.OutputRCBit());
       break;
+    case kArchBinarySearchSwitch:
+      AssembleArchBinarySearchSwitch(instr);
+      break;
     case kArchLookupSwitch:
       AssembleArchLookupSwitch(instr);
       DCHECK_EQ(LeaveRC, i.OutputRCBit());
@@ -1149,13 +1155,9 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ mr(i.OutputRegister(), fp);
       }
       break;
-    case kArchRootsPointer:
-      __ mr(i.OutputRegister(), kRootRegister);
-      DCHECK_EQ(LeaveRC, i.OutputRCBit());
-      break;
     case kArchTruncateDoubleToI:
       __ TruncateDoubleToI(isolate(), zone(), i.OutputRegister(),
-                           i.InputDoubleRegister(0));
+                           i.InputDoubleRegister(0), DetermineStubCallMode());
       DCHECK_EQ(LeaveRC, i.OutputRCBit());
       break;
     case kArchStoreWithWriteBarrier: {
@@ -1832,7 +1834,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
           __ isel(i.OutputRegister(1), r0, i.OutputRegister(1), crbit);
         } else {
           __ li(i.OutputRegister(1), Operand::Zero());
-          __ bc(v8::internal::Assembler::kInstrSize * 2, BT, crbit);
+          __ bc(v8::internal::kInstrSize * 2, BT, crbit);
           __ li(i.OutputRegister(1), Operand(1));
         }
       }
@@ -1859,7 +1861,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
           __ isel(i.OutputRegister(1), r0, i.OutputRegister(1), crbit);
         } else {
           __ li(i.OutputRegister(1), Operand::Zero());
-          __ bc(v8::internal::Assembler::kInstrSize * 2, BT, crbit);
+          __ bc(v8::internal::kInstrSize * 2, BT, crbit);
           __ li(i.OutputRegister(1), Operand(1));
         }
       }
@@ -2055,6 +2057,35 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       ATOMIC_BINOP_CASE(Xor, xor_)
 #undef ATOMIC_BINOP_CASE
 
+    case kPPC_ByteRev32: {
+      Register input = i.InputRegister(0);
+      Register output = i.OutputRegister();
+      Register temp1 = r0;
+      __ rotlwi(temp1, input, 8);
+      __ rlwimi(temp1, input, 24, 0, 7);
+      __ rlwimi(temp1, input, 24, 16, 23);
+      __ extsw(output, temp1);
+      break;
+    }
+#ifdef V8_TARGET_ARCH_PPC64
+    case kPPC_ByteRev64: {
+      Register input = i.InputRegister(0);
+      Register output = i.OutputRegister();
+      Register temp1 = r0;
+      Register temp2 = kScratchReg;
+      Register temp3 = i.InputRegister(1);
+      __ rldicl(temp1, input, 32, 32);
+      __ rotlwi(temp2, input, 8);
+      __ rlwimi(temp2, input, 24, 0, 7);
+      __ rotlwi(temp3, temp1, 8);
+      __ rlwimi(temp2, input, 24, 16, 23);
+      __ rlwimi(temp3, temp1, 24, 0, 7);
+      __ rlwimi(temp3, temp1, 24, 16, 23);
+      __ rldicr(temp2, temp2, 32, 31);
+      __ orx(output, temp2, temp3);
+      break;
+    }
+#endif  // V8_TARGET_ARCH_PPC64
     default:
       UNREACHABLE();
       break;
@@ -2114,31 +2145,19 @@ void CodeGenerator::AssembleArchTrap(Instruction* instr,
                                      FlagsCondition condition) {
   class OutOfLineTrap final : public OutOfLineCode {
    public:
-    OutOfLineTrap(CodeGenerator* gen, bool frame_elided, Instruction* instr)
-        : OutOfLineCode(gen),
-          frame_elided_(frame_elided),
-          instr_(instr),
-          gen_(gen) {}
+    OutOfLineTrap(CodeGenerator* gen, Instruction* instr)
+        : OutOfLineCode(gen), instr_(instr), gen_(gen) {}
 
     void Generate() final {
       PPCOperandConverter i(gen_, instr_);
-
-      Builtins::Name trap_id =
-          static_cast<Builtins::Name>(i.InputInt32(instr_->InputCount() - 1));
-      bool old_has_frame = __ has_frame();
-      if (frame_elided_) {
-        __ set_has_frame(true);
-        __ EnterFrame(StackFrame::WASM_COMPILED, true);
-      }
+      TrapId trap_id =
+          static_cast<TrapId>(i.InputInt32(instr_->InputCount() - 1));
       GenerateCallToTrap(trap_id);
-      if (frame_elided_) {
-        __ set_has_frame(old_has_frame);
-      }
     }
 
    private:
-    void GenerateCallToTrap(Builtins::Name trap_id) {
-      if (trap_id == Builtins::builtin_count) {
+    void GenerateCallToTrap(TrapId trap_id) {
+      if (trap_id == TrapId::kInvalid) {
         // We cannot test calls to the runtime in cctest/test-run-wasm.
         // Therefore we emit a call to C here instead of a call to the runtime.
         // We use the context register as the scratch register, because we do
@@ -2154,8 +2173,9 @@ void CodeGenerator::AssembleArchTrap(Instruction* instr,
         __ Ret();
       } else {
         gen_->AssembleSourcePosition(instr_);
-        __ Call(__ isolate()->builtins()->builtin_handle(trap_id),
-                RelocInfo::CODE_TARGET);
+        // A direct call to a wasm runtime stub defined in this module.
+        // Just encode the stub index. This will be patched at relocation.
+        __ Call(static_cast<Address>(trap_id), RelocInfo::WASM_STUB_CALL);
         ReferenceMap* reference_map =
             new (gen_->zone()) ReferenceMap(gen_->zone());
         gen_->RecordSafepoint(reference_map, Safepoint::kSimple, 0,
@@ -2166,12 +2186,10 @@ void CodeGenerator::AssembleArchTrap(Instruction* instr,
       }
     }
 
-    bool frame_elided_;
     Instruction* instr_;
     CodeGenerator* gen_;
   };
-  bool frame_elided = !frame_access_state()->has_frame();
-  auto ool = new (zone()) OutOfLineTrap(this, frame_elided, instr);
+  auto ool = new (zone()) OutOfLineTrap(this, instr);
   Label* tlabel = ool->entry();
   Label end;
 
@@ -2249,6 +2267,16 @@ void CodeGenerator::AssembleArchBoolean(Instruction* instr,
   __ bind(&done);
 }
 
+void CodeGenerator::AssembleArchBinarySearchSwitch(Instruction* instr) {
+  PPCOperandConverter i(this, instr);
+  Register input = i.InputRegister(0);
+  std::vector<std::pair<int32_t, Label*>> cases;
+  for (size_t index = 2; index < instr->InputCount(); index += 2) {
+    cases.push_back({i.InputInt32(index + 0), GetLabel(i.InputRpo(index + 1))});
+  }
+  AssembleArchBinarySearchSwitchRange(input, i.InputRpo(1), cases.data(),
+                                      cases.data() + cases.size());
+}
 
 void CodeGenerator::AssembleArchLookupSwitch(Instruction* instr) {
   PPCOperandConverter i(this, instr);
@@ -2259,7 +2287,6 @@ void CodeGenerator::AssembleArchLookupSwitch(Instruction* instr) {
   }
   AssembleArchJump(i.InputRpo(1));
 }
-
 
 void CodeGenerator::AssembleArchTableSwitch(Instruction* instr) {
   PPCOperandConverter i(this, instr);
@@ -2350,32 +2377,87 @@ void CodeGenerator::AssembleConstructFrame() {
     ResetSpeculationPoison();
   }
 
-  const RegList double_saves = call_descriptor->CalleeSavedFPRegisters();
-  if (shrink_slots > 0) {
-    __ Add(sp, sp, -shrink_slots * kPointerSize, r0);
-  }
-
-  // Save callee-saved Double registers.
-  if (double_saves != 0) {
-    __ MultiPushDoubles(double_saves);
-    DCHECK_EQ(kNumCalleeSavedDoubles,
-              base::bits::CountPopulation(double_saves));
-  }
-
-  // Save callee-saved registers.
+  const RegList saves_fp = call_descriptor->CalleeSavedFPRegisters();
   const RegList saves = FLAG_enable_embedded_constant_pool
                             ? call_descriptor->CalleeSavedRegisters() &
                                   ~kConstantPoolRegister.bit()
                             : call_descriptor->CalleeSavedRegisters();
+
+  if (shrink_slots > 0) {
+    if (info()->IsWasm() && shrink_slots > 128) {
+      // For WebAssembly functions with big frames we have to do the stack
+      // overflow check before we construct the frame. Otherwise we may not
+      // have enough space on the stack to call the runtime for the stack
+      // overflow.
+      Label done;
+
+      // If the frame is bigger than the stack, we throw the stack overflow
+      // exception unconditionally. Thereby we can avoid the integer overflow
+      // check in the condition code.
+      if ((shrink_slots * kPointerSize) < (FLAG_stack_size * 1024)) {
+        Register scratch = ip;
+        __ LoadP(scratch, FieldMemOperand(
+                            kWasmInstanceRegister,
+                            WasmInstanceObject::kRealStackLimitAddressOffset));
+        __ LoadP(scratch, MemOperand(scratch), r0);
+        __ Add(scratch, scratch, shrink_slots * kPointerSize, r0);
+        __ cmpl(sp, scratch);
+        __ bge(&done);
+      }
+
+      __ LoadP(r5,
+               FieldMemOperand(kWasmInstanceRegister,
+                               WasmInstanceObject::kCEntryStubOffset),
+               r0);
+      __ Move(cp, Smi::kZero);
+      __ CallRuntimeWithCEntry(Runtime::kThrowWasmStackOverflow, r5);
+      // We come from WebAssembly, there are no references for the GC.
+      ReferenceMap* reference_map = new (zone()) ReferenceMap(zone());
+      RecordSafepoint(reference_map, Safepoint::kSimple, 0,
+                      Safepoint::kNoLazyDeopt);
+      if (FLAG_debug_code) {
+        __ stop(GetAbortReason(AbortReason::kUnexpectedReturnFromThrow));
+      }
+
+      __ bind(&done);
+    }
+
+    // Skip callee-saved and return slots, which are pushed below.
+    shrink_slots -= base::bits::CountPopulation(saves);
+    shrink_slots -= frame()->GetReturnSlotCount();
+    shrink_slots -=
+        (kDoubleSize / kPointerSize) * base::bits::CountPopulation(saves_fp);
+    __ Add(sp, sp, -shrink_slots * kPointerSize, r0);
+  }
+
+  // Save callee-saved Double registers.
+  if (saves_fp != 0) {
+    __ MultiPushDoubles(saves_fp);
+    DCHECK_EQ(kNumCalleeSavedDoubles, base::bits::CountPopulation(saves_fp));
+  }
+
+  // Save callee-saved registers.
   if (saves != 0) {
     __ MultiPush(saves);
     // register save area does not include the fp or constant pool pointer.
+  }
+
+  const int returns = frame()->GetReturnSlotCount();
+  if (returns != 0) {
+    // Create space for returns.
+    __ Add(sp, sp, -returns * kPointerSize, r0);
   }
 }
 
 void CodeGenerator::AssembleReturn(InstructionOperand* pop) {
   auto call_descriptor = linkage()->GetIncomingDescriptor();
   int pop_count = static_cast<int>(call_descriptor->StackParameterCount());
+
+  const int returns = frame()->GetReturnSlotCount();
+  if (returns != 0) {
+    // Create space for returns.
+    __ Add(sp, sp, returns * kPointerSize, r0);
+  }
 
   // Restore registers.
   const RegList saves = FLAG_enable_embedded_constant_pool
@@ -2483,7 +2565,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
           __ mov(dst, Operand::EmbeddedNumber(src.ToFloat64().value()));
           break;
         case Constant::kExternalReference:
-          __ mov(dst, Operand(src.ToExternalReference()));
+          __ Move(dst, src.ToExternalReference());
           break;
         case Constant::kHeapObject: {
           Handle<HeapObject> src_object = src.ToHeapObject();

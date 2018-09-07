@@ -478,6 +478,20 @@ class WasmModuleBuilder {
       });
     }
 
+    // Add exceptions.
+    if (wasm.exceptions.length > 0) {
+      if (debug) print("emitting exceptions @ " + binary.length);
+      binary.emit_section(kExceptionSectionCode, section => {
+        section.emit_u32v(wasm.exceptions.length);
+        for (let type of wasm.exceptions) {
+          section.emit_u32v(type.params.length);
+          for (let param of type.params) {
+            section.emit_u8(param);
+          }
+        }
+      });
+    }
+
     // Add export table.
     var mem_export = (wasm.memory !== undefined && wasm.memory.exp);
     var exports_count = wasm.exports.length + (mem_export ? 1 : 0);
@@ -530,20 +544,6 @@ class WasmModuleBuilder {
       });
     }
 
-    // Add exceptions.
-    if (wasm.exceptions.length > 0) {
-      if (debug) print("emitting exceptions @ " + binary.length);
-      binary.emit_section(kExceptionSectionCode, section => {
-        section.emit_u32v(wasm.exceptions.length);
-        for (let type of wasm.exceptions) {
-          section.emit_u32v(type.params.length);
-          for (let param of type.params) {
-            section.emit_u8(param);
-          }
-        }
-      });
-    }
-
     // Add function bodies.
     if (wasm.functions.length > 0) {
       // emit function bodies
@@ -568,6 +568,12 @@ class WasmModuleBuilder {
             }
             if (l.s128_count > 0) {
               local_decls.push({count: l.s128_count, type: kWasmS128});
+            }
+            if (l.anyref_count > 0) {
+              local_decls.push({count: l.anyref_count, type: kWasmAnyRef});
+            }
+            if (l.except_count > 0) {
+              local_decls.push({count: l.except_count, type: kWasmExceptRef});
             }
           }
 

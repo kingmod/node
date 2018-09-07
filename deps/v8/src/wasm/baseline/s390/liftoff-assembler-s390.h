@@ -13,12 +13,12 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
-uint32_t LiftoffAssembler::PrepareStackFrame() {
+int LiftoffAssembler::PrepareStackFrame() {
   BAILOUT("PrepareStackFrame");
   return 0;
 }
 
-void LiftoffAssembler::PatchPrepareStackFrame(uint32_t offset,
+void LiftoffAssembler::PatchPrepareStackFrame(int offset,
                                               uint32_t stack_slots) {
   BAILOUT("PatchPrepareStackFrame");
 }
@@ -57,17 +57,6 @@ void LiftoffAssembler::Store(Register dst_addr, Register offset_reg,
                              StoreType type, LiftoffRegList pinned,
                              uint32_t* protected_store_pc, bool is_store_mem) {
   BAILOUT("Store");
-}
-
-void LiftoffAssembler::ChangeEndiannessLoad(LiftoffRegister dst, LoadType type,
-                                            LiftoffRegList pinned) {
-  BAILOUT("ChangeEndiannessLoad");
-}
-
-void LiftoffAssembler::ChangeEndiannessStore(LiftoffRegister src,
-                                             StoreType type,
-                                             LiftoffRegList pinned) {
-  BAILOUT("ChangeEndiannessStore");
 }
 
 void LiftoffAssembler::LoadCallerFrameSlot(LiftoffRegister dst,
@@ -228,6 +217,10 @@ void LiftoffAssembler::emit_i32_remu(Register dst, Register lhs, Register rhs,
   BAILOUT("i32_remu");
 }
 
+void LiftoffAssembler::emit_i32_shr(Register dst, Register lhs, int amount) {
+  BAILOUT("i32_shr");
+}
+
 bool LiftoffAssembler::emit_i64_divs(LiftoffRegister dst, LiftoffRegister lhs,
                                      LiftoffRegister rhs,
                                      Label* trap_div_by_zero,
@@ -255,6 +248,19 @@ bool LiftoffAssembler::emit_i64_remu(LiftoffRegister dst, LiftoffRegister lhs,
                                      Label* trap_div_by_zero) {
   BAILOUT("i64_remu");
   return true;
+}
+
+void LiftoffAssembler::emit_i64_shr(LiftoffRegister dst, LiftoffRegister lhs,
+                                    int amount) {
+  BAILOUT("i64_shr");
+}
+
+void LiftoffAssembler::emit_i32_to_intptr(Register dst, Register src) {
+#ifdef V8_TARGET_ARCH_S390X
+  BAILOUT("emit_i32_to_intptr");
+#else
+// This is a nop on s390.
+#endif
 }
 
 bool LiftoffAssembler::emit_type_conversion(WasmOpcode opcode,
@@ -305,7 +311,9 @@ void LiftoffAssembler::emit_f64_set_cond(Condition cond, Register dst,
   BAILOUT("emit_f64_set_cond");
 }
 
-void LiftoffAssembler::StackCheck(Label* ool_code) { BAILOUT("StackCheck"); }
+void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {
+  BAILOUT("StackCheck");
+}
 
 void LiftoffAssembler::CallTrapCallbackForTesting() {
   BAILOUT("CallTrapCallbackForTesting");
@@ -339,14 +347,14 @@ void LiftoffAssembler::CallNativeWasmCode(Address addr) {
   BAILOUT("CallNativeWasmCode");
 }
 
-void LiftoffAssembler::CallRuntime(Zone* zone, Runtime::FunctionId fid) {
-  BAILOUT("CallRuntime");
-}
-
 void LiftoffAssembler::CallIndirect(wasm::FunctionSig* sig,
                                     compiler::CallDescriptor* call_descriptor,
                                     Register target) {
   BAILOUT("CallIndirect");
+}
+
+void LiftoffAssembler::CallRuntimeStub(WasmCode::RuntimeStubId sid) {
+  BAILOUT("CallRuntimeStub");
 }
 
 void LiftoffAssembler::AllocateStackSlot(Register addr, uint32_t size) {
